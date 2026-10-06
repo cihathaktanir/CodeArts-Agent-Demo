@@ -1,0 +1,66 @@
+import { chromium } from 'playwright';
+import { mkdir, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+await mkdir('screenshots',{recursive:true});
+const browser=await chromium.launch({executablePath:process.env.CHROME_PATH??'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true,args:['--disable-gpu','--no-first-run']});
+const page=await browser.newPage({viewport:{width:1920,height:1080},reducedMotion:'reduce'});
+const errors=[];const failed=[];
+page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+page.on('response',r=>{if(r.status()>=400)failed.push(`${r.status()} ${r.url()}`);});
+const base=process.env.DASHBOARD_URL??'http://127.0.0.1:5173';
+await page.goto(base);await page.getByRole('tab',{name:'Telecom'}).waitFor();await page.locator('.province').first().waitFor();await page.evaluate(()=>document.fonts.ready);
+async function switchSector(sector){await page.getByRole('tab',{name:sector,exact:true}).click();await page.locator('.operations-map').waitFor();await page.locator('.province').first().waitFor();await page.waitForTimeout(400);}
+const checks=[];
+for(const [width,height] of [[1920,1080],[1680,945],[1366,768]]){
+  await page.setViewportSize({width,height});
+  for(const [sector,people,incidents] of [['Telecom','24,180','12'],['Banking','18,420','8'],['Government','32,840','6']]){
+    await switchSector(sector);
+    assert.equal(await page.locator('.kpi-value').nth(2).innerText(),people);
+    assert.equal(await page.locator('.kpi-value').nth(1).innerText(),incidents);
+    const dimensions=await page.evaluate(()=>({w:document.documentElement.scrollWidth,h:document.documentElement.scrollHeight,viewportW:innerWidth,viewportH:innerHeight}));
+    assert.ok(dimensions.w<=width,`Horizontal overflow at ${sector} ${width}`);assert.ok(dimensions.h<=height,`Vertical desktop overflow at ${sector} ${width}`);
+    const fit=await page.evaluate(()=>{const panel=document.querySelector('.timeline-panel').getBoundingClientRect();const tiles=document.querySelector('.service-status-grid').getBoundingClientRect();const rows=[...document.querySelectorAll('.incidents-panel tbody tr')];const table=document.querySelector('.incidents-panel .incident-table-wrap').getBoundingClientRect();const heading=document.querySelector('.header-title').getBoundingClientRect();const title=document.querySelector('h1').getBoundingClientRect();return {tilesFit:tiles.bottom<=panel.bottom-4,rowsFit:rows.length<5||rows[4].getBoundingClientRect().bottom<=table.bottom+1,titleFit:title.left>=heading.left&&title.right<=heading.right};});
+    assert.ok(fit.tilesFit,`Clipped service tiles at ${sector} ${width}`);assert.ok(fit.rowsFit,`Fifth incident row clipped at ${sector} ${width}`);assert.ok(fit.titleFit,`Header title clipped at ${sector} ${width}`);
+    await page.screenshot({path:`screenshots/${sector.toLowerCase()}-${width}x${height}.png`,fullPage:true});
+    checks.push(`${sector} ${width}x${height}: reconciled KPIs, no document overflow`);
+  }
+}
+await page.setViewportSize({width:1920,height:1080});await switchSector('Telecom');
+await page.locator('select[aria-label="Time range"]').first().selectOption('6h');
+assert.deepEqual(await page.locator('select[aria-label="Time range"]').evaluateAll(elements=>elements.map(e=>e.value)),['6h','6h','6h']);
+await page.locator('select[aria-label="Time range"]').last().selectOption('7d');
+assert.deepEqual(await page.locator('select[aria-label="Time range"]').evaluateAll(elements=>elements.map(e=>e.value)),['7d','7d','7d']);
+await page.getByRole('button',{name:/Istanbul: Critical impact/}).locator('circle').first().click();
+assert.equal(await page.locator('.kpi-value').nth(2).innerText(),'12,480');
+await page.getByRole('button',{name:/Istanbul selected/}).click();
+assert.equal(await page.locator('.kpi-value').nth(2).innerText(),'24,180');
+await page.locator('.health-list button').filter({hasText:'Maintenance'}).click();await page.getByText('No active incidents in this selection.').waitFor();assert.equal(await page.locator('.kpi-value').nth(2).innerText(),'0');
+await page.locator('.filter-reset').click();
+await page.locator('.service-tile').first().click();assert.ok(Number(await page.locator('.kpi-value').nth(1).innerText())<12);await page.locator('.filter-reset').click();
+await page.locator('.trend-panel .recharts-wrapper').hover({position:{x:150,y:80}});await page.waitForTimeout(150);assert.ok(await page.locator('.trend-panel .recharts-tooltip-wrapper').isVisible(),'Chart tooltip does not display');
+await page.getByRole('button',{name:'View all incidents'}).click();assert.equal(await page.locator('[role="dialog"] tbody tr').count(),12);await page.keyboard.press('Escape');
+await page.locator('.row-open').first().click();await page.getByRole('dialog').waitFor();assert.ok(await page.getByRole('dialog').getByText('Expected behavior').isVisible());
+await page.getByLabel('Demo-only workflow status',{exact:true}).selectOption('Resolved');await page.keyboard.press('Escape');
+await page.locator('.filter-reset').click();assert.equal(await page.locator('.kpi-value').nth(1).innerText(),'11');
+await page.reload();await page.locator('.kpi-strip').waitFor();assert.equal(await page.locator('.kpi-value').nth(1).innerText(),'11');
+await page.getByRole('button',{name:'Demo controls'}).click();await page.getByRole('button',{name:'Reset demo defaults'}).click();assert.equal(await page.locator('.kpi-value').nth(1).innerText(),'12');
+await page.getByRole('button',{name:'Zoom in',exact:true}).click();
+const transformBefore=await page.locator('.map-svg > g').first().getAttribute('transform');const mapBox=await page.locator('.map-svg').boundingBox();
+await page.mouse.move(mapBox.x+100,mapBox.y+100);await page.mouse.down();await page.mouse.move(mapBox.x+145,mapBox.y+125);await page.mouse.up();
+assert.notEqual(await page.locator('.map-svg > g').first().getAttribute('transform'),transformBefore,'Map pan does not change view');
+await page.getByRole('button',{name:'Reset map view'}).click();
+await page.getByRole('button',{name:'Demo controls'}).click();await page.getByRole('button',{name:'Pause map animation'}).click();assert.ok(await page.locator('main.paused').isVisible());await page.getByRole('button',{name:'Resume map animation'}).click();await page.getByRole('button',{name:'Demo controls'}).click();
+await switchSector('Banking');await page.reload();await page.locator('.kpi-strip').waitFor();assert.equal(await page.getByRole('tab',{name:'Banking'}).getAttribute('aria-selected'),'true');
+await page.getByRole('tab',{name:'Banking'}).focus();await page.keyboard.press('ArrowRight');await page.locator('.kpi-strip').waitFor();assert.equal(await page.getByRole('tab',{name:'Government'}).getAttribute('aria-selected'),'true');
+await page.locator('.province').first().waitFor();await page.getByRole('button',{name:/Adana: High impact/}).locator('circle').first().click();assert.equal(await page.locator('.kpi-value').nth(1).innerText(),'1');await page.locator('.filter-reset').click();
+await page.setViewportSize({width:390,height:844});await switchSector('Telecom');
+assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Mobile horizontal overflow');
+assert.ok(await page.evaluate(()=>document.querySelector('.dashboard-header').getBoundingClientRect().bottom<=document.querySelector('.kpi-strip').getBoundingClientRect().top),'Mobile header overlaps KPIs');
+await page.screenshot({path:'screenshots/telecom-mobile-390x844.png',fullPage:true});
+await page.setViewportSize({width:900,height:1100});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Tablet horizontal overflow');
+await page.screenshot({path:'screenshots/telecom-tablet-900x1100.png',fullPage:true});
+assert.deepEqual(errors,[],'Browser console errors');assert.deepEqual(failed,[],'Failed asset requests');
+checks.push('Shared time range, map selection/reset, maintenance empty state, complete incident list, details/Escape, local workflow persistence/reset, zoom reset, industry persistence/keyboard, responsive mobile/tablet, no browser errors or failed requests');
+await writeFile('screenshots/validation.json',JSON.stringify({checkedAt:new Date().toISOString(),checks,errors,failed},null,2));
+console.log(checks.join('\n'));
+await browser.close();

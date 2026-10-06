@@ -1,0 +1,12 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+await mkdir('public/map', { recursive: true });
+const metadata = await fetch('https://www.geoboundaries.org/api/current/gbOpen/TUR/ADM1/').then(r => r.json());
+await writeFile('public/map/provenance.json', JSON.stringify(metadata, null, 2));
+const provinces = await fetch(metadata.simplifiedGeometryGeoJSON).then(r => r.json());
+if (provinces.features.length !== 81) throw new Error('Expected 81 provinces');
+await writeFile('public/map/turkey-provinces.geojson', JSON.stringify(provinces));
+const world = await fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson').then(r => r.json());
+const neighbors = world.features.filter(f => ['Turkey','Greece','Bulgaria','Georgia','Armenia','Azerbaijan','Iran','Iraq','Syria','Cyprus','Northern Cyprus','Russia','Romania','Ukraine'].includes(f.properties.ADMIN));
+await writeFile('public/map/surrounding-countries.geojson', JSON.stringify({type:'FeatureCollection', features:neighbors}));
+console.log(`Stored ${provinces.features.length} provinces and ${neighbors.length} surrounding countries.`);
+await import('./normalize-geography.mjs');

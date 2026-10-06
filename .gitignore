@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.sites-runtime/
+*.log
+.npm-cache/
+.asset-source/
+public/map/terrain-source.zip
+public/map/terrain-source/
+screenshots/
+/*.png
+/website-generation-prompt.md
